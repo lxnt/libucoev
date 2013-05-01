@@ -1,0 +1,21 @@
+Source: libucoev0
+Priority: extra
+Maintainer: Alexander Sabourenkov <a.saburenkov@hh.ru>, Nikolay Sivko <sivko@hh.ru>
+Build-Depends: debhelper (>= 7), libev-dev
+Standards-Version: 3.8.1
+Section: libs
+Homepage: http://code.google.com/p/coev/
+
+Package: libucoev-dev
+Section: libdevel
+Architecture: any
+Depends: libucoev0 (= ${binary:Version})
+Description: io-scheduled coroutines based on swapcontext/setcontext 
+ io-scheduled coroutines based on swapcontext/setcontext 
+
+Package: libucoev0
+Section: libs
+Architecture: any
+Depends: ${shlibs:Depends}, ${misc:Depends}, libev3
+Description: io-scheduled coroutines based on swapcontext/setcontext 
+ io-scheduled coroutines based on swapcontext/setcontext 

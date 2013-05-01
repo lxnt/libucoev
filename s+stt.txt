@@ -1,0 +1,165 @@
+Coroutine states.
+
+States: coev_t::state. 
+
+CSTATE_ZERO 	  	: allocated, not initialized. Should not be seen outside the library code
+CSTATE_CURRENT 		: currently executing. 
+CSTATE_RUNNABLE		: ready to be switched into, but not in the runqueue
+CSTATE_SCHEDULED	: ready to be switched into, and in the runqueue
+CSTATE_IOWAIT        	: waiting for IO event or its timeout
+CSTATE_SLEEP         	: waiting for a specified time (mostly same as the IOWAIT)
+CSTATE_DEAD          	: dead and can not be switched into.
+
+
+State transition types. 
+
+Stored in coev_t::status OF THE TARGET (the one the switch is TO) COROUTINE.
+Same logic is applied to A,X,Y switch parameters: they are set in the target
+coroutine. 
+
+Generalizing, the origin's part of coev_switch() and friends set up switch context
+in the target, comprising:
+  - state transition type 
+  - origin pointer
+  
+then set origin's and target's state field and call the swapcontext().
+
+after that, the target's part of coev_switch() begins (if any).
+
+
+State transition type field is also used for returning switch failure codes. 
+This is so because in the calling code after-switch error checking
+is to be done after switch call, at which point it may well be either 
+a switch failure, or, after switch success, some other coroutine switching
+back to this one.
+
+
+CSW_NONE             there was no switch. Initial stt for the root coroutine, and
+                     any one that was never switched into .
+		     
+CSW_VOLUNTARY        explicit switch, not from the scheduler.
+
+CSW_EVENT            io-event fired
+CSW_WAKEUP           sleep elapsed
+CSW_TIMEOUT          io-event timed out
+CSW_YOURTURN         target was explicitly scheduled before
+
+CSW_SIGCHLD          child died
+
+
+
+Errors:
+Explicit switch is an explicit call of coev_switch(). The other types of switch are two:
+child death and from the scheduler.
+
+CSW_LESS_THAN_AN_ERROR  Used to distinguish errors from non-errors, never actually returned.
+
+CSW_SCHEDULER_NEEDED    wait, sleep or stall w/o scheduler: please run one. 
+                        requested action is not performed.
+CSW_TARGET_SELF         explicit switch to self attempted.
+CSW_TARGET_DEAD         switch to/schedule of a dead coroutine attempted.
+CSW_TARGET_BUSY         explicit switch to a coroutine that has an active event watcher
+
+
+Control transfer out of dead coroutine. 
+
+Coroutine becomes dead when its function returns. At that point control is transfered 
+to its first CSTATE_RUNNABLE or CSTATE_SCHEDULED ancestor. In the latter case, the 
+target is removed from the runqueue. In case there is no suitable target, but a 
+scheduler exists, switch to the scheduler is performed. 
+
+If there is absolutely nowhere to switch, program is aborted.
+
+
+Scheduler launch procedure:
+
+/* 0. Define scheduler coroutine. Simplest form is: */
+static coev_t csloop;
+coev_init(&csloop, coev_scheduler, some_stacksize);
+
+/* 1. Schedule current coroutine. This is allowed in the absence of the scheduler. */
+coev_schedule(coev.current())
+
+/* 2. Switch to scheduler, which runs the runq, switching back (but continuing to exist). */
+coev_switch(&csloop);
+
+/* 3. Commence doing stuff */
+
+
+
+Scheduler operation.
+
+There is a runqueue - list of coroutines ready to be switched into. 
+They have their state set to CSTATE_SCHEDULED, and status (stt) set to one of the 
+event/timeout/wakeup/yourturn.
+
+One iteration of scheduler's main loop looks like:
+  - check if stopflag was raised, exit the mainloop if it was
+  - move the runqueue to a temporary
+  - switch into every coroutine on the runqueue. This should cause some coroutines
+    to either activate their event watchers or be directly added to the runqueue.
+  - if something was added to the runqueue, do ev_loop(EVLOOP_NONBLOCK) and start over.
+  - if nothing was added to the runqueue, but there are active event watchers, do ev_loop(EVLOOP_ONESHOT) and start over
+  - if we got here, nothing is in runqueue and there are no active event watchers. Exit the main loop.
+  
+
+
+cnrbuf_t error reporting.
+
+return -1, set errno.
+
+
+read, readline: returns whatever there is in the buffer.
+When there is no data to return (on a subsequent call maybe), 
+returns -1 and sets errno to whatever it was.
+if the error resulted from coev_wait():
+    ETIMEDOUT if timeout 
+    EINTR if voluntary switches into waiters are supported and such a switch took place.
+
+write: no relation to cnrbuf_t any more. returns -1 on error. 
+Amount sent is always returned in separate var.
+
+Operation on a busy (in use by some other coroutine) cnrbuf_t object: result not defined.
+
+
+
+The whole join mess:
+
+question is what happens with return values of coevs that die while their parent is dead or 
+waiting on an event.
+
+If the coev's return value is not wanted, set its parent to scheduler or some other
+coev that would just discard it.
+
+If parent's dead, there is a search (_sweep) to find non-dead parent. But, problem is, 
+the switchback with some coev's return value is likely to not be expected there.
+
+On the other hand, the parent may be ready to accept the return value, but just happen to 
+be waiting for some unrelated event. This is bad programming style, but the situation should
+be handled gracefully nevertheless.
+
+Current:
+    if the parent is dead or waits on an event, and there is a scheduler: 
+	switch to scheduler which discards.
+    if the parent is dead or waits on an event, and there no scheduler:
+	switch to first ancestor in CSTATE_RUNNABLE
+    otherwise, switch to parent with the return value.
+
+
+Proposed:
+    As above, but if a parent waits on an event:
+	set dead child to CSTATE_ZOMBIE
+	add dead child to per-parent zombie queue
+    
+    When parent dies, its zombie queue contents get discarded
+    by ???
+    
+    If parent calls coev_join(), first child from zombie queue 
+    gets switched into and completes its cleanup, switching to
+    parent (which is now CSTATE_RUNNABLE) with its return value.
+    If the zombie queue is empty, something happens.
+    
+    
+
+
+  
